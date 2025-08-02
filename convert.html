@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>File Converter</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding: 20px;
+            background-color: #f8f9fa;
+        }
+        .container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 0 15px rgba(0,0,0,0.1);
+            margin-top: 20px;
+        }
+        .drag-area {
+            border: 2px dashed #6c757d;
+            border-radius: 5px;
+            padding: 30px;
+            text-align: center;
+            margin: 20px 0;
+            background-color: #f8f9fa;
+            transition: all 0.3s ease;
+        }
+        .drag-area.active {
+            border-color: #198754;
+            background-color: #e8f5e9;
+        }
+        .file-info {
+            margin-top: 20px;
+            display: none;
+        }
+        .progress {
+            display: none;
+            margin-top: 20px;
+        }
+        .back-button {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="back-button">
+            <button class="btn btn-secondary" onclick="window.electronAPI.navigateTo('button.html')">
+                <i class="fas fa-arrow-left"></i> Back to Main
+            </button>
+        </div>
+
+        <h2 class="mb-4">File Converter</h2>
+        <div class="alert alert-info">
+            Convert XLSX or CSV files to SQLite database tables
+        </div>
+
+        <div class="drag-area" id="dropZone">
+            <div class="icon">
+                <i class="fas fa-cloud-upload-alt"></i>
+            </div>
+            <h4>Drag & Drop Files Here</h4>
+            <span>OR</span>
+            <button class="btn btn-primary mt-3" id="browseBtn">Browse Files</button>
+            <input type="file" hidden id="fileInput" accept=".xlsx,.csv">
+        </div>
+
+        <div class="file-info" id="fileInfo">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">File Details</h5>
+                    <p class="card-text" id="fileName">No file selected</p>
+                    <div class="mb-3">
+                        <label for="tableName" class="form-label">Table Name</label>
+                        <input type="text" class="form-control" id="tableName" placeholder="Enter table name">
+                    </div>
+                    <button class="btn btn-success" id="convertBtn" disabled>Convert File</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="progress">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+        </div>
+
+        <div class="mt-4" id="resultArea"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Renderer process code
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const browseBtn = document.getElementById('browseBtn');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const tableName = document.getElementById('tableName');
+        const convertBtn = document.getElementById('convertBtn');
+        const resultArea = document.getElementById('resultArea');
+        const progressBar = document.querySelector('.progress');
+        
+        let currentFile = null;
+
+        // Event listeners for drag and drop
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('active');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('active');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('active');
+            const file = e.dataTransfer.files[0];
+            handleFile(file);
+        });
+
+        // Browse button click handler
+        browseBtn.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // File input change handler
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            handleFile(file);
+        });
+
+        // Handle the selected file
+        function handleFile(file) {
+            if (!file) return;
+            
+            const validTypes = [
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'text/csv'
+            ];
+            
+            if (!validTypes.includes(file.type) && 
+                !file.name.endsWith('.xlsx') && 
+                !file.name.endsWith('.csv')) {
+                showAlert('Please select a valid XLSX or CSV file', 'danger');
+                return;
+            }
+
+            currentFile = file;
+            fileName.textContent = `Selected file: ${file.name}`;
+            fileInfo.style.display = 'block';
+            tableName.value = file.name.split('.')[0].replace(/[^a-zA-Z0-9_]/g, '_');
+            convertBtn.disabled = false;
+        }
+
+        // Convert button click handler
+        convertBtn.addEventListener('click', async () => {
+            if (!currentFile || !tableName.value) {
+                showAlert('Please select a file and enter a table name', 'warning');
+                return;
+            }
+
+            try {
+                progressBar.style.display = 'flex';
+                convertBtn.disabled = true;
+
+                // Create a temporary file reader
+                const reader = new FileReader();
+                
+                reader.onload = async (e) => {
+                    try {
+                        // Get the array buffer and convert it to Uint8Array
+                        const arrayBuffer = e.target.result;
+                        const uint8Array = new Uint8Array(arrayBuffer);
+                        
+                        // Send the file data and metadata to the main process
+                        const result = await window.electronAPI.convertFile({
+                            fileData: Array.from(uint8Array), // Convert to regular array for IPC transfer
+                            fileName: currentFile.name,
+                            tableName: tableName.value,
+                            fileType: currentFile.name.endsWith('.csv') ? 'csv' : 'xlsx'
+                        });
+
+                        if (result.success) {
+                            showAlert(`File converted successfully! ${result.rowsProcessed} rows processed.`, 'success');
+                        } else {
+                            throw new Error(result.error || 'Conversion failed');
+                        }
+                    } catch (error) {
+                        showAlert(`Error converting file: ${error.message}`, 'danger');
+                    } finally {
+                        progressBar.style.display = 'none';
+                        convertBtn.disabled = false;
+                    }
+                };
+
+                reader.onerror = () => {
+                    showAlert('Error reading file', 'danger');
+                    progressBar.style.display = 'none';
+                    convertBtn.disabled = false;
+                };
+
+                // Read the file as an array buffer
+                reader.readAsArrayBuffer(currentFile);
+            } catch (error) {
+                showAlert(`Error converting file: ${error.message}`, 'danger');
+                progressBar.style.display = 'none';
+                convertBtn.disabled = false;
+            }
+        });
+
+        // Helper function to show alerts
+        function showAlert(message, type) {
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type} alert-dismissible fade show`;
+            alert.innerHTML = `
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            `;
+            resultArea.innerHTML = '';
+            resultArea.appendChild(alert);
+        }
+
+        // Listen for conversion progress updates
+        window.electronAPI.onConversionProgress((progress) => {
+            const progressBarInner = progressBar.querySelector('.progress-bar');
+            progressBarInner.style.width = `${progress}%`;
+        });
+    </script>
+</body>
+</html> 
