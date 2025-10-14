@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getFlipkartFilteredData: () => ipcRenderer.invoke('get-flipkart-filtered-data'),
     getFlipkartMergedData: () => ipcRenderer.invoke('get-flipkart-merged-data'),
     updateAmazonExpectedStockByFnsku: (fnsku, expectedStock) => ipcRenderer.invoke('update-amazon-expected-stock-by-fnsku', fnsku, expectedStock),
+    updateAmazonExpectedStockAndRecommended: (identifier, expectedStock, aRecommended) => ipcRenderer.invoke('update-amazon-expected-stock-and-recommended', identifier, expectedStock, aRecommended),
     updateAmazonFExpectedStockByFnsku: (fnsku, fExpectedStock, fRecommended) => ipcRenderer.invoke('update-amazon-f-expectedstock-by-fnsku', fnsku, fExpectedStock, fRecommended),
     convertFile: (fileObj) => ipcRenderer.invoke('convert-file', fileObj),
     exportSelectedRowsToExcel: (selectedRows, filterMode) => ipcRenderer.invoke('export-selected-rows-to-excel', selectedRows, filterMode),

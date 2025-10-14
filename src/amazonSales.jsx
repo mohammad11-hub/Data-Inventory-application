@@ -97,12 +97,13 @@ const AmazonSales = () => {
     try {
       const flipkartRows = await window.electronAPI.getFlipkartFilteredData();
       console.log("Raw Flipkart data:", flipkartRows.slice(0, 2)); // Debug log
-      setData(flipkartRows.map((row, idx) => ({ 
+      const processedData = flipkartRows.map((row, idx) => ({ 
         ...row, 
         key: idx, 
         f_expectedstock: row.f_expectedstock || 0 
-      })));
-      console.log("Processed Flipkart data:", data.slice(0, 2)); // Debug log
+      }));
+      setData(processedData);
+      console.log("Processed Flipkart data:", processedData.slice(0, 2)); // Debug log
       setFilterMode("flipkart");
     } catch (err) {
       message.error("Error applying Flipkart Filter");
@@ -124,53 +125,102 @@ const AmazonSales = () => {
   };
 
   const handleSave = async (key) => {
-    const newData = [...data];
-    const idx = newData.findIndex((item) => item.key === key);
-    if (idx > -1) {
-      if (filterMode === 'amazon') {
-        newData[idx].expected_stock = editRow.expected_stock;
-        newData[idx].A_recommanded = editRow.A_recommanded;
-        setData(newData);
-        const rowId = newData[idx].id;
-        if (rowId !== undefined) {
-          try {
-            await window.electronAPI.updateTableRow('amazon', rowId, { 
-              Expected_stock: editRow.expected_stock,
-              A_recommanded: editRow.A_recommanded 
-            });
-            message.success('Expected Stock and A_Recommended updated in database');
-          } catch (err) {
-            message.error('Failed to update Expected Stock and A_Recommended in database');
-          }
+    try {
+      setLoading(true); // Show loading state
+      
+      const newData = [...data];
+      const idx = newData.findIndex((item) => item.key === key);
+      if (idx > -1) {
+        // Update only the selected row
+        const row = newData[idx];
+        
+       if (filterMode === "amazon") {
+        // Convert edited values
+        const expectedStock = parseInt(editRow.Expected_stock) || 0;
+        const aRecommended = parseInt(editRow.A_recommanded) || 0;
+
+        // Determine identifier: use item_name if ASIN is "-" or blank
+        const identifier = (!row.asin || row.asin === '-' || row.asin.trim() === '')
+          ? row.item_name
+          : row.asin;
+
+        // Update in the database
+        await window.electronAPI.updateAmazonExpectedStockAndRecommended(
+          identifier,
+          expectedStock,
+          aRecommended
+        );
+
+        // Update only this row locally
+        row.Expected_stock = expectedStock;
+        row.A_recommanded = aRecommended;
+
+        message.success(`Amazon data updated successfully for ${identifier}`);
+      }else if (filterMode === "flipkart") {
+                // Update Flipkart columns with proper number conversion
+                const fExpectedStock = parseInt(editRow.f_expectedstock) || 0;
+                const fRecommended = parseInt(editRow.F_recommanded) || 0;
+                
+                // Determine the identifier to use for database update
+                // If FNSKU is "-" or empty, use Item Name, otherwise use FNSKU
+                const identifier = (!row.fnsku || row.fnsku === '-' || row.fnsku.trim() === '') 
+                  ? row.item_name 
+                  : row.fnsku;
+                
+                // Update database first - use the correct identifier
+                await window.electronAPI.updateAmazonFExpectedStockByFnsku(
+                  identifier, // Use FNSKU or Item Name based on condition
+                  fExpectedStock,
+                  fRecommended
+                );
+          
+          // Update local data
+          row.f_expectedstock = fExpectedStock;
+          row.F_recommanded = fRecommended;
+          message.success(`Flipkart data updated successfully for ${identifier}`);
         }
-      } else if (filterMode === 'flipkart') {
-        // Update only the specific row that was edited
-        newData[idx].f_expectedstock = editRow.f_expectedstock;
-        newData[idx].F_recommanded = editRow.F_recommanded;
+        
+        // Update the table data immediately
+        newData[idx] = row;
         setData(newData);
         
-        // Update only the specific FNSKU in the database
-        const fnsku = newData[idx].fnsku;
-        console.log("Saving Flipkart data:", { fnsku, f_expectedstock: editRow.f_expectedstock, F_recommanded: editRow.F_recommanded }); // Debug log
-        if (fnsku) {
+        // Refresh data from database to ensure sync
+        setTimeout(async () => {
           try {
-            await window.electronAPI.updateAmazonFExpectedStockByFnsku(fnsku, editRow.f_expectedstock, editRow.F_recommanded);
-            message.success(`f_expectedstock and F_Recommended updated for ${fnsku}`);
-            // Re-fetch Flipkart data to show the updated value
-            handleFlipkartFilter();
-          } catch (err) {
-            console.error("Error updating Flipkart data:", err); // Debug log
-            message.error('Failed to update Flipkart data in database');
+            if (filterMode === "amazon") {
+              const updatedData = await window.electronAPI.getAmazonInventoryReport();
+              setData(updatedData.map((row, idx) => ({ ...row, key: idx })));
+            } else if (filterMode === "flipkart") {
+              const updatedData = await window.electronAPI.getFlipkartFilteredData();
+              setData(updatedData.map((row, idx) => ({ 
+                ...row, 
+                key: idx, 
+                f_expectedstock: row.f_expectedstock || 0 
+              })));
+            }
+          } catch (refreshError) {
+            console.error('Error refreshing data:', refreshError);
+          } finally {
+            setLoading(false);
           }
-        }
+        }, 500); // Small delay to ensure database update is complete
       }
+      
+      setEditingKey("");
+      setEditRow({});
+    } catch (error) {
+      console.error('Error saving data:', error);
+      message.error('Failed to update data. Please try again.');
+      setLoading(false);
     }
-    setEditingKey("");
-    setEditRow({});
   };
 
   const handleInputChange = (e, field) => {
-    setEditRow({ ...editRow, [field]: e.target.value });
+    const value = e.target.value;
+    // Allow empty string or valid numbers
+    if (value === '' || !isNaN(value)) {
+      setEditRow({ ...editRow, [field]: value });
+    }
   };
 
   const filteredData = data.filter((item) => {
@@ -325,10 +375,12 @@ const AmazonSales = () => {
         render: (text, record) =>
           isEditing(record) ? 
             <Input
-              value={editRow.expected_stock}
-              onChange={(e) => handleInputChange(e, "expected_stock")}
+              type="number"
+              value={editRow.Expected_stock}
+              onChange={(e) => handleInputChange(e, "Expected_stock")}
               size={screens.xs ? 'small' : 'middle'}
               style={{ width: '100%' }}
+              placeholder="Enter number"
             />
           : (
             <Text style={{
@@ -348,10 +400,12 @@ const AmazonSales = () => {
         render: (text, record) =>
           isEditing(record) ? 
             <Input
+              type="number"
               value={editRow.A_recommanded}
               onChange={(e) => handleInputChange(e, "A_recommanded")}
               size={screens.xs ? 'small' : 'middle'}
               style={{ width: '100%' }}
+              placeholder="Enter number"
             />
           : (
             <Text style={{
@@ -377,6 +431,8 @@ const AmazonSales = () => {
                 size="small"
                 icon={<SaveOutlined />}
                 onClick={() => handleSave(record.key)}
+                loading={loading}
+                disabled={loading}
                 />
             </Tooltip>
             <Tooltip title="Cancel">
@@ -416,15 +472,33 @@ const AmazonSales = () => {
       ),
     },
     {
-      title: "FNSKU",
+      title: "FNSKU / Item Name",
       dataIndex: "fnsku",
       key: "fnsku",
-      width: screens.xs ? 100 : 150,
-      render: (text) => (
-        <Tag color="purple" style={{ fontFamily: 'monospace', fontSize: screens.xs ? '10px' : '12px' }}>
-          {text}
-        </Tag>
-      ),
+      width: screens.xs ? 120 : 180,
+      render: (text, record) => {
+        // If FNSKU is empty, null, or "-", show item name instead
+        const displayValue = (!text || text === '-' || text.trim() === '') 
+          ? record.item_name 
+          : text;
+        
+        return (
+          <Tag 
+            color={(!text || text === '-' || text.trim() === '') ? "orange" : "purple"} 
+            style={{ 
+              fontFamily: (!text || text === '-' || text.trim() === '') ? 'inherit' : 'monospace', 
+              fontSize: screens.xs ? '10px' : '12px',
+              maxWidth: '100%',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap'
+            }}
+            title={displayValue} // Show full text on hover
+          >
+            {displayValue}
+          </Tag>
+        );
+      },
     },
     {
       title: "Flipkart Sales",
@@ -479,10 +553,12 @@ const AmazonSales = () => {
         render: (text, record) =>
           isEditing(record) ? (
             <Input
+              type="number"
               value={editRow.f_expectedstock}
               onChange={(e) => handleInputChange(e, "f_expectedstock")}
               size={screens.xs ? 'small' : 'middle'}
               style={{ width: '100%' }}
+              // placeholder="Enter number"
             />
           ) : (
             <Text style={{
@@ -502,10 +578,12 @@ const AmazonSales = () => {
         render: (text, record) =>
           isEditing(record) ? (
             <Input
+              type="number"
               value={editRow.F_recommanded}
               onChange={(e) => handleInputChange(e, "F_recommanded")}
               size={screens.xs ? 'small' : 'middle'}
               style={{ width: '100%' }}
+              // placeholder="Enter number"
             />
           ) : (
             <Text style={{
@@ -531,6 +609,8 @@ const AmazonSales = () => {
                 size="small"
                 icon={<SaveOutlined />}
                 onClick={() => handleSave(record.key)}
+                loading={loading}
+                disabled={loading}
               />
             </Tooltip>
             <Tooltip title="Cancel">
@@ -548,7 +628,7 @@ const AmazonSales = () => {
               size="small"
               icon={<EditOutlined />}
               onClick={() => handleEdit(record)}
-              disabled={editingKey !== ""}
+              disabled={editingKey !== "" || filterMode !== "flipkart"}
             />
           </Tooltip>
         );

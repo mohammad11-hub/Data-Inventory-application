@@ -7,6 +7,44 @@ const xlsx = require('xlsx');
 const FileConverter = require('./converter.js');
 const os = require('os');
 
+// Database operation queue to prevent concurrent access
+class DatabaseOperationQueue {
+  constructor() {
+    this.queue = [];
+    this.isProcessing = false;
+  }
+
+  async execute(operation) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ operation, resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  async processQueue() {
+    if (this.isProcessing || this.queue.length === 0) {
+      return;
+    }
+
+    this.isProcessing = true;
+
+    while (this.queue.length > 0) {
+      const { operation, resolve, reject } = this.queue.shift();
+      
+      try {
+        const result = await operation();
+        resolve(result);
+      } catch (error) {
+        reject(error);
+      }
+    }
+
+    this.isProcessing = false;
+  }
+}
+
+const dbOperationQueue = new DatabaseOperationQueue();
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1000,
@@ -24,6 +62,11 @@ function createWindow() {
   // OR: Load Vite dev server (for development)
   win.loadURL("http://localhost:5173");
 }
+app.disableHardwareAcceleration();
+
+app.on("ready", () => {
+  createWindow();
+});
 
 app.whenReady().then(() => {
   createWindow();
@@ -473,34 +516,153 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("update-amazon-expected-stock-by-fnsku", async (event, fnsku, expectedStock) => {
-    return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(
-        path.join(__dirname, "database.sqlite"),
-        sqlite3.OPEN_READWRITE,
-        (err) => { if (err) reject(err); }
-      );
-      const sql = "UPDATE amazon SET `Expected_stock` = ? WHERE `FNSKU` = ?";
-      db.run(sql, [expectedStock, fnsku], function (err) {
-        if (err) reject(err);
-        resolve({ changes: this.changes });
+    return dbOperationQueue.execute(() => {
+      return new Promise((resolve, reject) => {
+        const dbPath = path.join(__dirname, "database.sqlite");
+        
+        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
+          if (err) {
+            console.error('Database connection error:', err);
+            reject(err);
+            return;
+          }
+          
+          // Set database optimizations
+          db.serialize(() => {
+            db.run("PRAGMA journal_mode=WAL");
+            db.run("PRAGMA busy_timeout=30000");
+            db.run("PRAGMA synchronous=NORMAL");
+            
+            const sql = "UPDATE amazon SET `Expected_stock` = ? WHERE `FNSKU` = ?";
+            db.run(sql, [expectedStock, fnsku], function (err) {
+              db.close((closeErr) => {
+                if (closeErr) console.error('Close error:', closeErr);
+                if (err) {
+                  console.error('FNSKU expected stock update error:', err);
+                  reject(err);
+                } else {
+                  resolve({ changes: this.changes });
+                }
+              });
+            });
+          });
+        });
       });
-      db.close();
     });
   });
 
-  ipcMain.handle("update-amazon-f-expectedstock-by-fnsku", async (event, fnsku, fExpectedStock, fRecommended) => {
-    return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(
-        path.join(__dirname, "database.sqlite"),
-        sqlite3.OPEN_READWRITE,
-        (err) => { if (err) reject(err); }
-      );
-      const sql = "UPDATE amazon SET `f_expectedstock` = ?, `F_recommanded` = ? WHERE `FNSKU` = ?";
-      db.run(sql, [fExpectedStock, fRecommended, fnsku], function (err) {
-        if (err) reject(err);
-        resolve({ changes: this.changes });
+  // New function to update Amazon Expected Stock and A_Recommended by ASIN or Item Name
+  ipcMain.handle("update-amazon-expected-stock-and-recommended", async (event, identifier, expectedStock, aRecommended) => {
+    return dbOperationQueue.execute(() => {
+      return new Promise((resolve, reject) => {
+        const dbPath = path.join(__dirname, "database.sqlite");
+        
+        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
+          if (err) {
+            console.error('Database connection error:', err);
+            reject(err);
+            return;
+          }
+          
+          // Set database optimizations
+          db.serialize(() => {
+            db.run("PRAGMA journal_mode=WAL");
+            db.run("PRAGMA busy_timeout=30000");
+            db.run("PRAGMA synchronous=NORMAL");
+            
+            // First try to update by ASIN, if no rows affected, try by Item Name
+            const sqlByAsin = "UPDATE amazon SET `Expected_stock` = ?, `A_recommanded` = ? WHERE `ASIN` = ?";
+            db.run(sqlByAsin, [expectedStock, aRecommended, identifier], function (err) {
+              if (err) {
+                console.error('ASIN update error:', err);
+                db.close((closeErr) => {
+                  if (closeErr) console.error('Close error:', closeErr);
+                  reject(err);
+                });
+                return;
+              }
+              
+              // If no rows were updated by ASIN, try updating by Item Name
+              if (this.changes === 0) {
+                const sqlByItemName = "UPDATE amazon SET `Expected_stock` = ?, `A_recommanded` = ? WHERE `Item Name` = ?";
+                db.run(sqlByItemName, [expectedStock, aRecommended, identifier], function (err2) {
+                  db.close((closeErr) => {
+                    if (closeErr) console.error('Close error:', closeErr);
+                    if (err2) {
+                      console.error('Item name update error:', err2);
+                      reject(err2);
+                    } else {
+                      resolve({ changes: this.changes });
+                    }
+                  });
+                });
+              } else {
+                db.close((closeErr) => {
+                  if (closeErr) console.error('Close error:', closeErr);
+                  resolve({ changes: this.changes });
+                });
+              }
+            });
+          });
+        });
       });
-      db.close();
+    });
+  });
+
+  ipcMain.handle("update-amazon-f-expectedstock-by-fnsku", async (event, identifier, fExpectedStock, fRecommended) => {
+    return dbOperationQueue.execute(() => {
+      return new Promise((resolve, reject) => {
+        const dbPath = path.join(__dirname, "database.sqlite");
+        
+        const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
+          if (err) {
+            console.error('Database connection error:', err);
+            reject(err);
+            return;
+          }
+          
+          // Set database optimizations
+          db.serialize(() => {
+            db.run("PRAGMA journal_mode=WAL");
+            db.run("PRAGMA busy_timeout=30000");
+            db.run("PRAGMA synchronous=NORMAL");
+            
+            // First try to update by FNSKU, if no rows affected, try by Item Name
+            const sqlByFnsku = "UPDATE amazon SET `f_expectedstock` = ?, `F_recommanded` = ? WHERE `FNSKU` = ?";
+            db.run(sqlByFnsku, [fExpectedStock, fRecommended, identifier], function (err) {
+              if (err) {
+                console.error('FNSKU update error:', err);
+                db.close((closeErr) => {
+                  if (closeErr) console.error('Close error:', closeErr);
+                  reject(err);
+                });
+                return;
+              }
+              
+              // If no rows were updated by FNSKU, try updating by Item Name
+              if (this.changes === 0) {
+                const sqlByItemName = "UPDATE amazon SET `f_expectedstock` = ?, `F_recommanded` = ? WHERE `Item Name` = ?";
+                db.run(sqlByItemName, [fExpectedStock, fRecommended, identifier], function (err2) {
+                  db.close((closeErr) => {
+                    if (closeErr) console.error('Close error:', closeErr);
+                    if (err2) {
+                      console.error('Item name update error:', err2);
+                      reject(err2);
+                    } else {
+                      resolve({ changes: this.changes });
+                    }
+                  });
+                });
+              } else {
+                db.close((closeErr) => {
+                  if (closeErr) console.error('Close error:', closeErr);
+                  resolve({ changes: this.changes });
+                });
+              }
+            });
+          });
+        });
+      });
     });
   });
 
