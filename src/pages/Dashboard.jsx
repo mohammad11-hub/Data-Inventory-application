@@ -10,7 +10,7 @@ import {
   LineChartOutlined,
   PieChartOutlined
 } from '@ant-design/icons';
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title, Tooltip, Legend } from 'chart.js';
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title as ChartTitle, Tooltip, Legend } from 'chart.js';
 import { Bar, Line, Pie } from 'react-chartjs-2';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -21,7 +21,7 @@ ChartJS.register(
   LineElement,
   PointElement,
   ArcElement,
-  Title,
+  ChartTitle,
   Tooltip,
   Legend
 );
