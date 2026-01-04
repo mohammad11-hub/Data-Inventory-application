@@ -116,7 +116,7 @@ const Layout = ({ children }) => {
             fontWeight: 'bold',
             borderBottom: '1px solid rgba(255,255,255,0.1)'
           }}>
-            {collapsed ? 'DMS' : 'Data Management'}
+            {collapsed ? 'DMS' : 'Data Inventory System'}
           </div>
           <Menu
             theme="dark"
@@ -152,7 +152,7 @@ const Layout = ({ children }) => {
                 onClick={() => setMobileMenuVisible(true)}
               />
             )}
-            <Text strong style={{ fontSize: '18px' }}>Data Inventory System</Text>
+            <Text strong style={{ fontSize: '18px' }}>Craloft Inventory Application</Text>
           </div>
           <Space>
             <Space>
@@ -160,9 +160,9 @@ const Layout = ({ children }) => {
               <div>
                 <Text strong>{user?.username}</Text>
                 <br />
-                <Text type="secondary" style={{ fontSize: '12px' }}>
+                {/* <Text type="secondary" style={{ fontSize: '12px' }}>
                   {user?.role?.toUpperCase()}
-                </Text>
+                </Text> */}
               </div>
             </Space>
             <Button

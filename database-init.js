@@ -145,14 +145,55 @@ function initializeDatabase() {
                 return;
               }
               console.log('Default admin user created (username: admin, password: admin123)');
-              db.close();
-              resolve();
+              
+              // Create default staff user (password: staff123)
+              const hashedStaffPassword = bcrypt.hashSync('staff123', 10);
+              db.run(
+                'INSERT INTO users (username, password, role, email) VALUES (?, ?, ?, ?)',
+                ['staff', hashedStaffPassword, 'staff', 'staff@example.com'],
+                (err) => {
+                  if (err) {
+                    console.error('Error creating staff user:', err);
+                  } else {
+                    console.log('Default staff user created (username: staff, password: staff123)');
+                  }
+                  db.close();
+                  resolve();
+                }
+              );
             }
           );
         } else {
-          console.log('Admin user already exists');
-          db.close();
-          resolve();
+          // Check if staff user exists
+          db.get('SELECT COUNT(*) as count FROM users WHERE username = ?', ['staff'], async (err, staffRow) => {
+            if (err) {
+              console.error('Error checking staff user:', err);
+              db.close();
+              resolve();
+              return;
+            }
+
+            if (staffRow.count === 0) {
+              const hashedStaffPassword = bcrypt.hashSync('staff123', 10);
+              db.run(
+                'INSERT INTO users (username, password, role, email) VALUES (?, ?, ?, ?)',
+                ['staff', hashedStaffPassword, 'staff', 'staff@example.com'],
+                (err) => {
+                  if (err) {
+                    console.error('Error creating staff user:', err);
+                  } else {
+                    console.log('Default staff user created (username: staff, password: staff123)');
+                  }
+                  db.close();
+                  resolve();
+                }
+              );
+            } else {
+              console.log('Admin and staff users already exist');
+              db.close();
+              resolve();
+            }
+          });
         }
       });
     });
