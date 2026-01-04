@@ -6,6 +6,8 @@ const fs = require('fs');
 const xlsx = require('xlsx');
 const FileConverter = require('./converter.js');
 const os = require('os');
+const { initializeDatabase } = require('./database-init.js');
+const bcrypt = require('bcryptjs');
 
 // Database operation queue to prevent concurrent access
 class DatabaseOperationQueue {
@@ -44,6 +46,7 @@ class DatabaseOperationQueue {
 }
 
 const dbOperationQueue = new DatabaseOperationQueue();
+const dbPath = path.join(__dirname, "database.sqlite");
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -68,7 +71,15 @@ app.on("ready", () => {
   createWindow();
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Initialize database tables
+  try {
+    await initializeDatabase();
+    console.log('Database initialized successfully');
+  } catch (err) {
+    console.error('Database initialization error:', err);
+  }
+  
   createWindow();
 
   // IPC handler to add Expected Stock column to Amazon table
@@ -828,6 +839,183 @@ app.whenReady().then(() => {
       console.error('Error exporting to Excel:', error);
       return { success: false, error: error.message };
     }
+  });
+
+  // Authentication IPC handlers
+  ipcMain.handle('login', async (event, username, password) => {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+      });
+
+      db.get('SELECT * FROM users WHERE username = ? AND deleted_at IS NULL', [username], async (err, row) => {
+        if (err) {
+          db.close();
+          reject(err);
+          return;
+        }
+
+        if (!row) {
+          db.close();
+          resolve({ success: false, message: 'Invalid username or password' });
+          return;
+        }
+
+        const passwordMatch = await bcrypt.compare(password, row.password);
+        if (!passwordMatch) {
+          db.close();
+          resolve({ success: false, message: 'Invalid username or password' });
+          return;
+        }
+
+        // Log login activity
+        const logDb = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE);
+        logDb.run(
+          'INSERT INTO activity_logs (user_id, username, action, details) VALUES (?, ?, ?, ?)',
+          [row.id, row.username, 'LOGIN', 'User logged in'],
+          () => logDb.close()
+        );
+
+        db.close();
+        resolve({
+          success: true,
+          user: {
+            id: row.id,
+            username: row.username,
+            role: row.role,
+            email: row.email
+          }
+        });
+      });
+    });
+  });
+
+  ipcMain.handle('logout', async (event, userId, username) => {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE, (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+      });
+
+      db.run(
+        'INSERT INTO activity_logs (user_id, username, action, details) VALUES (?, ?, ?, ?)',
+        [userId, username, 'LOGOUT', 'User logged out'],
+        (err) => {
+          db.close();
+          if (err) {
+            reject(err);
+          } else {
+            resolve({ success: true });
+          }
+        }
+      );
+    });
+  });
+
+  ipcMain.handle('get-current-user', async () => {
+    // This will be handled by session storage in the frontend
+    return { success: false, message: 'Not implemented' };
+  });
+
+  ipcMain.handle('log-activity', async (event, userId, username, action, tableName, recordId, details) => {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE, (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+      });
+
+      db.run(
+        'INSERT INTO activity_logs (user_id, username, action, table_name, record_id, details) VALUES (?, ?, ?, ?, ?, ?)',
+        [userId, username, action, tableName, recordId, details],
+        (err) => {
+          db.close();
+          if (err) {
+            reject(err);
+          } else {
+            resolve({ success: true });
+          }
+        }
+      );
+    });
+  });
+
+  ipcMain.handle('get-activity-logs', async (event, limit = 100) => {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+      });
+
+      db.all(
+        'SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT ?',
+        [limit],
+        (err, rows) => {
+          db.close();
+          if (err) {
+            reject(err);
+          } else {
+            resolve(rows);
+          }
+        }
+      );
+    });
+  });
+
+  // Backup and Restore IPC handlers
+  ipcMain.handle('backup-database', async () => {
+    return new Promise((resolve, reject) => {
+      try {
+        const fs = require('fs');
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const backupFileName = `database_backup_${timestamp}.sqlite`;
+        const backupPath = path.join(os.homedir(), 'Downloads', backupFileName);
+        
+        fs.copyFileSync(dbPath, backupPath);
+        resolve({
+          success: true,
+          filePath: backupPath,
+          fileName: backupFileName
+        });
+      } catch (error) {
+        resolve({
+          success: false,
+          error: error.message
+        });
+      }
+    });
+  });
+
+  ipcMain.handle('restore-database', async (event, backupFilePath) => {
+    return new Promise((resolve, reject) => {
+      try {
+        const fs = require('fs');
+        // Create a backup of current database before restoring
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const currentBackup = path.join(os.homedir(), 'Downloads', `database_before_restore_${timestamp}.sqlite`);
+        fs.copyFileSync(dbPath, currentBackup);
+        
+        // Restore from backup
+        fs.copyFileSync(backupFilePath, dbPath);
+        resolve({
+          success: true,
+          message: 'Database restored successfully'
+        });
+      } catch (error) {
+        resolve({
+          success: false,
+          error: error.message
+        });
+      }
+    });
   });
 
   app.on("activate", () => {

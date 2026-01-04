@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
  
 contextBridge.exposeInMainWorld('electronAPI', {
+    // Database operations
     getTableData: (tableName) => ipcRenderer.invoke('get-table-data', tableName),
     getTableNames: () => ipcRenderer.invoke('get-table-names'),
     updateTableRow: (tableName, id, data) => ipcRenderer.invoke('update-table-row', tableName, id, data),
@@ -16,5 +17,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateAmazonFExpectedStockByFnsku: (fnsku, fExpectedStock, fRecommended) => ipcRenderer.invoke('update-amazon-f-expectedstock-by-fnsku', fnsku, fExpectedStock, fRecommended),
     convertFile: (fileObj) => ipcRenderer.invoke('convert-file', fileObj),
     exportSelectedRowsToExcel: (selectedRows, filterMode) => ipcRenderer.invoke('export-selected-rows-to-excel', selectedRows, filterMode),
-    onConversionProgress: (callback) => ipcRenderer.on('conversion-progress', (event, progress) => callback(progress))
+    onConversionProgress: (callback) => ipcRenderer.on('conversion-progress', (event, progress) => callback(progress)),
+    // Authentication
+    login: (username, password) => ipcRenderer.invoke('login', username, password),
+    logout: (userId, username) => ipcRenderer.invoke('logout', userId, username),
+    logActivity: (userId, username, action, tableName, recordId, details) => ipcRenderer.invoke('log-activity', userId, username, action, tableName, recordId, details),
+    getActivityLogs: (limit) => ipcRenderer.invoke('get-activity-logs', limit),
+    // Backup & Restore
+    backupDatabase: () => ipcRenderer.invoke('backup-database'),
+    restoreDatabase: (filePath) => ipcRenderer.invoke('restore-database', filePath)
 }); 
